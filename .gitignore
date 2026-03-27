@@ -1,0 +1,8 @@
+.env
+token.json
+ride_history.json
+__pycache__/
+.venv/
+*.pyc
+*.pyo
+.DS_Store

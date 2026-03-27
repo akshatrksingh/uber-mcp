@@ -1,0 +1,15 @@
+[project]
+name = "uber-mcp"
+version = "0.1.0"
+description = "MCP server for booking Uber rides via Claude agent"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=0.86.0",
+    "click>=8.3.1",
+    "httpx>=0.28.1",
+    "mcp>=1.26.0",
+    "python-dotenv>=1.2.2",
+]
+
+[project.scripts]
+uber-mcp-server = "src.server:main"
