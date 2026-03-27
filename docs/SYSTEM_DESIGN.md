@@ -233,3 +233,8 @@ uber-mcp-server/
 
 _Deviations from this design are logged below by Claude Code as development progresses._
 
+### Phase 3 — 2026-03-27
+- **Model ID**: Spec specified `claude-sonnet-4-20250514`; used `claude-sonnet-4-5` instead. The date-suffixed Claude 4 model ID does not exist in the Anthropic API — Claude 4.x uses the `claude-[family]-4-[minor]` naming scheme. `claude-sonnet-4-5` is the closest stable equivalent.
+- **provider.py**: Added `src/provider.py` as a thin registry to avoid circular imports between `src/server.py` and `src/tools/*.py`. Not in the original file layout but required by the architecture.
+- **geocoding_client.py**: Tool files call `geocoding_client.geocode()` directly (not through MockProvider) since geocoding does not require Uber OAuth. MockProvider no longer needs a `geocode()` method.
+
