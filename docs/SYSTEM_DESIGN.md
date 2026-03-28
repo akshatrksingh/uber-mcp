@@ -233,6 +233,25 @@ uber-mcp-server/
 
 _Deviations from this design are logged below by Claude Code as development progresses._
 
+### Phase 4 — 2026-03-27 (browser automation selectors — confirmed working)
+- **Pickup input**: Must click the container div via `[data-uweb-guide-key="RV_PUDO_PICKUP_INPUT"]`. Clicking the inner `<input>` directly fails because child elements intercept pointer events.
+- **Destination input**: `input[aria-label="destination location input"]` with `force=True` — overlapping elements block a normal click.
+- **Autocomplete**: Type with `delay=80`, sleep 3 s for network request, then click `[role="option"]:visible` first result.
+- **"See prices"**: `text=See prices` click triggers a full-page navigation from `uber.com/us/en/rider-home/` to `m.uber.com/go/product-selection`. Use `page.wait_for_url('**/product-selection**')` to confirm arrival.
+- **Session persistence**: Switched from manual cookie I/O to `launch_persistent_context` with `~/.uber-mcp/chrome-profile`. Login state survives process restarts automatically; `cookies.json` no longer used.
+- **Bot detection bypass**: `executable_path` pointing to the real Chrome binary combined with `--disable-blink-features=AutomationControlled` is sufficient to pass Uber's bot checks.
+- **capacity field**: Now attempted via `_CAPACITY_EL` selector; falls back to `0` if not found. MockProvider still returns correct values.
+
+### Phase 4 — 2026-03-27 (pivot from HTTP API to browser automation)
+- **Uber API not accessible**: Uber's OAuth API requires a formal business partnership and does not grant `request` scope to individual developers. `uber_client.py` and `auth_manager.py` were built but cannot be used in practice. Kept in the repo as the intended HTTP path for future partnership use.
+- **Browser automation via Playwright**: Replaced `UberClient` with `BrowserProvider` (three files: `browser_session.py`, `browser_actions.py`, `browser_provider.py`). The provider interface (MockProvider contract) is unchanged — all six MCP tools are unaffected.
+- **Geocoding unchanged**: `geocoding_client.py` still handles address → lat/lng. `BrowserProvider.geocode()` delegates to it and caches the raw address string for use when typing into Uber's search box.
+- **Session persistence**: A single Chromium browser context lives for the lifetime of the MCP server process; cookies saved to `~/.uber-mcp/cookies.json` survive restarts.
+- **Login flow**: If cookies are missing or expired, `_ensure_ready()` returns a `LOGIN_REQUIRED` error and opens a visible browser. The user logs in manually, then calls `uber_authenticate` to proceed. `input()` is never called inside a tool handler (conflicts with stdio transport).
+- **product_id scheme**: In browser mode, product IDs are slugified product names (`uberx`, `comfort`, `uberxl`) rather than Uber's internal UUIDs. State flows correctly between `get_ride_options` → `request_estimate` → `request_ride` because the browser page is kept alive across calls.
+- **Selector fragility**: All CSS selectors are in named constants in `browser_actions.py` (`SEL` comments). They will need updating if Uber changes their frontend.
+- **capacity field**: Not reliably exposed in Uber's web UI. Always returns `0` from BrowserProvider; MockProvider returns correct values.
+
 ### Phase 3 — 2026-03-27
 - **Model ID**: Spec specified `claude-sonnet-4-20250514`; used `claude-sonnet-4-5` instead. The date-suffixed Claude 4 model ID does not exist in the Anthropic API — Claude 4.x uses the `claude-[family]-4-[minor]` naming scheme. `claude-sonnet-4-5` is the closest stable equivalent.
 - **provider.py**: Added `src/provider.py` as a thin registry to avoid circular imports between `src/server.py` and `src/tools/*.py`. Not in the original file layout but required by the architecture.

@@ -1,6 +1,6 @@
 import logging
 
-from src import geocoding_client
+from src import provider as _prov
 
 logger = logging.getLogger(__name__)
 
@@ -26,4 +26,4 @@ async def uber_geocode(address: str) -> dict:
             'recoverable': True,
             'suggestion': 'Ask the user for a location name or street address.',
         }
-    return await geocoding_client.geocode(address)
+    return await _prov.get_provider().geocode(address)

@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
 from src import provider as _prov
+from src.browser_provider import BrowserProvider
 from src.mock_provider import MockProvider
 from src.tools.geocode import uber_geocode
 from src.tools.ride_options import uber_get_ride_options
@@ -38,14 +39,12 @@ def _configure_provider(mock: bool) -> None:
     """Set the active provider based on the --mock flag.
 
     Args:
-        mock: If True, use MockProvider. Real provider added in Phase 4.
+        mock: If True, use MockProvider. Otherwise use UberClient with AuthManager.
     """
     if mock:
         _prov.configure(MockProvider())
     else:
-        # Phase 4: wire real UberClient here
-        _prov.configure(MockProvider())
-        logger.warning('Real Uber client not yet implemented — falling back to mock')
+        _prov.configure(BrowserProvider())
 
 
 @click.command()
