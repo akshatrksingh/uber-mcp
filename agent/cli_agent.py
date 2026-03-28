@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent
 TRANSCRIPTS_DIR = PROJECT_ROOT / 'transcripts'
+_CHROME_PROFILE = Path.home() / '.uber-mcp' / 'chrome-profile'
 
 # Spec says claude-sonnet-4-20250514; using claude-sonnet-4-5 (closest stable ID).
 # Deviation logged in SYSTEM_DESIGN.md Changelog.
@@ -215,11 +216,30 @@ async def _agent_loop(mock: bool) -> None:
                     print(f'Transcript saved: {path.relative_to(PROJECT_ROOT)}')
 
 
+def _ensure_browser_setup(mock: bool) -> None:
+    """Run first-time browser auth setup if the Chrome profile doesn't exist yet."""
+    if mock or _CHROME_PROFILE.exists():
+        return
+    print('First-time setup: no saved Uber session found.')
+    print('A browser will open — please log in to your Uber account.')
+    print()
+    import subprocess
+    result = subprocess.run(
+        ['uv', 'run', 'python', 'setup_browser.py'],
+        cwd=str(PROJECT_ROOT),
+    )
+    if result.returncode != 0:
+        print('Browser setup failed. Run `uv run python setup_browser.py` manually.', file=sys.stderr)
+        sys.exit(1)
+    print()
+
+
 @click.command()
 @click.option('--mock', is_flag=True, default=False, help='Use mock provider (no Uber credentials needed).')
 def main(mock: bool) -> None:
     """Chat with Claude to book Uber rides."""
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
+    _ensure_browser_setup(mock=mock)
     asyncio.run(_agent_loop(mock=mock))
 
 

@@ -14,6 +14,7 @@ from src.tools.request_ride import uber_request_ride
 from src.tools.ride_status import uber_get_ride_status
 from src.tools.cancel_ride import uber_cancel_ride
 from src.tools.auth import uber_authenticate
+from src.tools.ride_history import uber_ride_history
 
 load_dotenv()
 
@@ -33,6 +34,7 @@ mcp.tool()(uber_get_ride_options)
 mcp.tool()(uber_request_ride)
 mcp.tool()(uber_get_ride_status)
 mcp.tool()(uber_cancel_ride)
+mcp.tool()(uber_ride_history)
 
 
 def _configure_provider(mock: bool) -> None:

@@ -281,3 +281,7 @@ class MockProvider:
             User dict with name and email.
         """
         return {'name': 'Test User', 'email': 'test@example.com'}
+
+    def get_ride_history(self) -> list[dict]:
+        """Return empty history — mock provider does not persist rides."""
+        return []

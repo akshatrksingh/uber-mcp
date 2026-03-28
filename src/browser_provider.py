@@ -1,18 +1,38 @@
 """Browser-based Uber provider — drives uber.com via Playwright.
 
 Implements the same interface as MockProvider; MCP tools are unchanged.
-All DOM interaction is delegated to browser_actions.py.
+Browser is used ONLY for get_ride_options (navigate + scrape).
+Everything after that (preview, confirm, status, cancel) is in-memory mock.
 """
-import asyncio
+import json
 import logging
-import re
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 
 from src import browser_actions as _ba
 from src import geocoding_client
 from src.browser_session import BrowserSession
 
 logger = logging.getLogger(__name__)
+
+_HISTORY_PATH = Path.home() / '.uber-mcp' / 'rides_history.json'
+
+
+def _load_history() -> list[dict]:
+    try:
+        return json.loads(_HISTORY_PATH.read_text()) if _HISTORY_PATH.exists() else []
+    except Exception as exc:
+        logger.warning('Could not read rides_history.json: %s', exc)
+        return []
+
+
+def _save_history(history: list[dict]) -> None:
+    try:
+        _HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _HISTORY_PATH.write_text(json.dumps(history, indent=2))
+    except Exception as exc:
+        logger.warning('Could not write rides_history.json: %s', exc)
 
 
 class BrowserProvider:
@@ -21,8 +41,8 @@ class BrowserProvider:
     def __init__(self) -> None:
         self._session = BrowserSession()
         self._addr_cache: dict[str, str] = {}   # "lat,lng" → original address string
-        self._selected_product: str | None = None
-        self._active_ride_id: str | None = None
+        self._last_options: list[dict] = []      # scraped from last get_ride_options call
+        self._last_ride: dict | None = None      # set on confirm=true
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -34,12 +54,11 @@ class BrowserProvider:
     def _addr(self, lat: float, lng: float) -> str:
         return self._addr_cache.get(self._key(lat, lng), '')
 
-    async def _ensure_ready(self) -> dict | None:
-        """Start the browser and verify Uber login.
+    def _find_option(self, product_id: str) -> dict | None:
+        return next((o for o in self._last_options if o['product_id'] == product_id), None)
 
-        Returns:
-            None on success, or a structured LOGIN_REQUIRED error dict.
-        """
+    async def _ensure_ready(self) -> dict | None:
+        """Start the browser and verify Uber login."""
         await self._session.start()
         if not await self._session.ensure_logged_in():
             return {
@@ -58,14 +77,7 @@ class BrowserProvider:
     # ------------------------------------------------------------------
 
     async def geocode(self, address: str) -> dict:
-        """Resolve coordinates via geocoding_client and cache the address string.
-
-        Args:
-            address: Location name or street address.
-
-        Returns:
-            {latitude, longitude, display_name}, ambiguous dict, or error dict.
-        """
+        """Resolve coordinates via geocoding_client and cache the address string."""
         result = await geocoding_client.geocode(address)
         if 'latitude' in result:
             self._addr_cache[self._key(result['latitude'], result['longitude'])] = address
@@ -77,21 +89,22 @@ class BrowserProvider:
     async def get_ride_options(
         self, pickup_lat: float, pickup_lng: float, dest_lat: float, dest_lng: float
     ) -> dict:
-        """Navigate to uber.com, enter both addresses, and scrape available ride types."""
+        """Navigate to uber.com, enter both addresses, scrape and store ride options."""
         if err := await self._ensure_ready():
             return err
         pickup = self._addr(pickup_lat, pickup_lng)
         dest = self._addr(dest_lat, dest_lng)
         logger.info('get_ride_options: pickup=%r dest=%r', pickup, dest)
         if not pickup or not dest:
-            return {'error': 'MISSING_ADDRESS',
-                    'message': 'No cached address for these coordinates.',
-                    'recoverable': True,
-                    'suggestion': 'Call uber_geocode for both pickup and destination first.'}
+            return {
+                'error': 'MISSING_ADDRESS',
+                'message': 'No cached address for these coordinates.',
+                'recoverable': True,
+                'suggestion': 'Call uber_geocode for both pickup and destination first.',
+            }
         page = self._session.page
         try:
             await page.goto('https://www.uber.com/us/en/rider-home/', wait_until='domcontentloaded', timeout=30000)
-            await asyncio.sleep(1)
             if not await _ba.fill_address(page, 0, pickup):
                 return {'error': 'BROWSER_ERROR', 'message': 'Could not enter pickup address.',
                         'recoverable': True, 'suggestion': 'Uber UI may have changed — see SEL constants in browser_actions.py.'}
@@ -105,6 +118,7 @@ class BrowserProvider:
             if not options:
                 return {'error': 'BROWSER_ERROR', 'message': 'No ride options found.',
                         'recoverable': True, 'suggestion': 'Update _PRODUCT_CARDS selector in browser_actions.py.'}
+            self._last_options = options
             return {'options': options}
         except Exception as exc:
             logger.error('get_ride_options: %s', exc)
@@ -114,72 +128,108 @@ class BrowserProvider:
         self, product_id: str, pickup_lat: float, pickup_lng: float,
         dest_lat: float, dest_lng: float,
     ) -> dict:
-        """Click the matching product card and return the displayed fare preview."""
-        if err := await self._ensure_ready():
-            return err
-        try:
-            name, fare_text = await _ba.click_product(self._session.page, product_id)
-            if not name:
-                return {'error': 'PRODUCT_NOT_FOUND', 'message': f'Ride type {product_id!r} not available.',
-                        'recoverable': True, 'suggestion': 'Call uber_get_ride_options to refresh options.'}
-            self._selected_product = name
-            pn = re.findall(r'\d+(?:\.\d+)?', fare_text.replace(',', ''))
+        """Return a fare preview from stored ride options — no browser interaction."""
+        option = self._find_option(product_id)
+        if not option:
             return {
-                'status': 'preview',
-                'fare': {'display': fare_text.strip(), 'value': float(pn[0]) if pn else 0.0, 'currency': 'USD'},
-                'eta_minutes': 0, 'product_name': name, 'fare_id': None,
+                'error': 'PRODUCT_NOT_FOUND',
+                'message': f'Ride type {product_id!r} not in last options list.',
+                'recoverable': True,
+                'suggestion': 'Call uber_get_ride_options first.',
             }
-        except Exception as exc:
-            logger.error('request_estimate: %s', exc)
-            return {'error': 'BROWSER_ERROR', 'message': str(exc), 'recoverable': True, 'suggestion': 'Try again.'}
+        low, high = option['estimate_low'], option['estimate_high']
+        display = f'${low:.2f}' if low == high else f'${low:.2f}–${high:.2f}'
+        return {
+            'status': 'preview',
+            'fare': {'display': display, 'value': low, 'currency': option['currency']},
+            'eta_minutes': option['eta_minutes'],
+            'product_name': option['name'],
+            'fare_id': None,
+        }
 
     async def request_ride(
         self, product_id: str, pickup_lat: float, pickup_lng: float,
         dest_lat: float, dest_lng: float, fare_id: str | None = None,
     ) -> dict:
-        """Click the Request/Confirm button; scrape and return confirmed ride details."""
-        if err := await self._ensure_ready():
-            return err
-        try:
-            driver, eta_raw = await _ba.click_request(self._session.page)
-            eta_nums = re.findall(r'\d+', eta_raw)
-            ride_id = f'browser-ride-{int(time.time())}'
-            self._active_ride_id = ride_id
-            return {
-                'status': 'confirmed', 'ride_id': ride_id,
-                'driver': {'name': driver or 'Your driver', 'phone': None, 'rating': None},
-                'vehicle': {'make': None, 'model': None, 'license_plate': None},
-                'eta_minutes': int(eta_nums[0]) if eta_nums else 0,
-            }
-        except Exception as exc:
-            logger.error('request_ride: %s', exc)
-            return {'error': 'BROWSER_ERROR', 'message': str(exc), 'recoverable': True, 'suggestion': 'Try again.'}
+        """Return a mock confirmed ride using stored option data and persist to history.
+
+        # MOCK: Real implementation would click the "Request" button or call Uber API.
+        """
+        option = self._find_option(product_id)
+        ride_id = f'uber-{int(time.time())}'
+        now = datetime.now(timezone.utc).isoformat()
+        low = option['estimate_low'] if option else 0
+        high = option['estimate_high'] if option else 0
+        fare_display = f'${low:.2f}' if low == high else f'${low:.2f}–${high:.2f}'
+
+        self._last_ride = {
+            'ride_id': ride_id,
+            'product_name': option['name'] if option else product_id,
+            'booked_at': time.time(),
+        }
+
+        entry = {
+            'ride_id': ride_id,
+            'product_name': self._last_ride['product_name'],
+            'pickup': self._addr(pickup_lat, pickup_lng),
+            'destination': self._addr(dest_lat, dest_lng),
+            'fare': fare_display,
+            'booked_at': now,
+            'status': 'confirmed',
+        }
+        history = _load_history()
+        history.append(entry)
+        _save_history(history)
+
+        return {
+            'status': 'confirmed',
+            'ride_id': ride_id,
+            'product_name': self._last_ride['product_name'],
+            'driver': {'name': 'Marcus T.', 'phone': '+1 (555) 234-5678', 'rating': 4.92},
+            'vehicle': {'make': 'Toyota', 'model': 'Camry', 'license_plate': 'TLC-4829'},
+            'eta_minutes': option['eta_minutes'] if option else 3,
+            'note': 'Mock confirmation — in production this would trigger a real Uber booking via API or browser click.',
+        }
 
     async def get_ride_status(self, ride_id: str) -> dict:
-        """Scrape driver name and ETA from the active ride screen."""
-        if err := await self._ensure_ready():
-            return err
-        page = self._session.page
-        driver = await _ba.safe_text(page, _ba._DRIVER_NAME)
-        eta_raw = await _ba.safe_text(page, _ba._ETA_ACTIVE)
-        eta_nums = re.findall(r'\d+', eta_raw)
+        """Return a mock ride status that progresses based on time since booking.
+
+        # MOCK: Real implementation would scrape the active-ride screen or call Uber API.
+        """
+        booked_at = self._last_ride['booked_at'] if self._last_ride else time.time()
+        elapsed = time.time() - booked_at
+        if elapsed < 60:
+            status, eta = 'accepted', 3
+        elif elapsed < 180:
+            status, eta = 'arriving', 1
+        elif elapsed < 300:
+            status, eta = 'in_progress', None
+        else:
+            status, eta = 'completed', None
         return {
-            'status': 'accepted',
-            'driver': {'name': driver or 'Your driver', 'phone': None, 'rating': None},
-            'vehicle': None,
-            'eta_minutes': int(eta_nums[0]) if eta_nums else None,
+            'status': status,
+            'driver': {'name': 'Marcus T.', 'phone': '+1 (555) 234-5678', 'rating': 4.92},
+            'vehicle': {'make': 'Toyota', 'model': 'Camry', 'license_plate': 'TLC-4829'},
+            'eta_minutes': eta,
         }
 
     async def cancel_ride(self, ride_id: str) -> dict:
-        """Click Cancel and confirm the cancellation dialog."""
-        if err := await self._ensure_ready():
-            return err
-        ok = await _ba.click_cancel(self._session.page)
-        if not ok:
-            return {'error': 'BROWSER_ERROR', 'message': 'Cancel button not found.',
-                    'recoverable': False, 'suggestion': 'Cancel manually in the Uber app.'}
-        self._active_ride_id = None
+        """Return a mock cancellation and update history status to 'cancelled'.
+
+        # MOCK: Real implementation would click the Cancel button or call Uber API.
+        """
+        history = _load_history()
+        for entry in history:
+            if entry['ride_id'] == ride_id:
+                entry['status'] = 'cancelled'
+                break
+        _save_history(history)
+        self._last_ride = None
         return {'status': 'cancelled', 'cancellation_fee': None}
+
+    def get_ride_history(self) -> list[dict]:
+        """Return all persisted rides from rides_history.json."""
+        return _load_history()
 
     def is_authenticated(self) -> bool:
         return self._session.is_logged_in

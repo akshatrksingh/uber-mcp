@@ -14,6 +14,9 @@ async def uber_get_ride_options(
 ) -> dict:
     """Get available ride types with prices for a route.
 
+    Always return ALL available ride options to the user, regardless of what
+    ride type they asked for. Let the user see all options and prices before choosing.
+
     Call uber_geocode first for both pickup and destination to get coordinates.
     Returns all available products with price ranges and ETAs.
 
