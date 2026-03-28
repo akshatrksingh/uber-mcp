@@ -6,6 +6,7 @@ Everything after that (preview, confirm, status, cancel) is in-memory mock.
 """
 import json
 import logging
+import random
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +18,17 @@ from src.browser_session import BrowserSession
 logger = logging.getLogger(__name__)
 
 _HISTORY_PATH = Path.home() / '.uber-mcp' / 'rides_history.json'
+
+MOCK_DRIVERS = [
+    {'name': 'Marcus T.',  'rating': 4.92, 'vehicle': ('Toyota',  'Camry',   'TLC-4829')},
+    {'name': 'Priya S.',   'rating': 4.88, 'vehicle': ('Honda',   'Accord',  'TLC-7731')},
+    {'name': 'James W.',   'rating': 4.95, 'vehicle': ('Hyundai', 'Sonata',  'TLC-2156')},
+    {'name': 'Sofia R.',   'rating': 4.91, 'vehicle': ('Toyota',  'Prius',   'TLC-8843')},
+    {'name': 'David K.',   'rating': 4.87, 'vehicle': ('Nissan',  'Altima',  'TLC-3367')},
+    {'name': 'Aisha M.',   'rating': 4.93, 'vehicle': ('Kia',     'K5',      'TLC-5512')},
+    {'name': 'Carlos P.',  'rating': 4.89, 'vehicle': ('Honda',   'Civic',   'TLC-9948')},
+    {'name': 'Lin Z.',     'rating': 4.94, 'vehicle': ('Tesla',   'Model 3', 'TLC-1125')},
+]
 
 
 def _load_history() -> list[dict]:
@@ -162,10 +174,14 @@ class BrowserProvider:
         high = option['estimate_high'] if option else 0
         fare_display = f'${low:.2f}' if low == high else f'${low:.2f}–${high:.2f}'
 
+        driver = random.choice(MOCK_DRIVERS)
+        make, model, plate = driver['vehicle']
+
         self._last_ride = {
             'ride_id': ride_id,
             'product_name': option['name'] if option else product_id,
             'booked_at': time.time(),
+            'driver': driver,
         }
 
         entry = {
@@ -185,8 +201,8 @@ class BrowserProvider:
             'status': 'confirmed',
             'ride_id': ride_id,
             'product_name': self._last_ride['product_name'],
-            'driver': {'name': 'Marcus T.', 'phone': '+1 (555) 234-5678', 'rating': 4.92},
-            'vehicle': {'make': 'Toyota', 'model': 'Camry', 'license_plate': 'TLC-4829'},
+            'driver': {'name': driver['name'], 'phone': None, 'rating': driver['rating']},
+            'vehicle': {'make': make, 'model': model, 'license_plate': plate},
             'eta_minutes': option['eta_minutes'] if option else 3,
             'note': 'Mock confirmation — in production this would trigger a real Uber booking via API or browser click.',
         }
@@ -206,10 +222,12 @@ class BrowserProvider:
             status, eta = 'in_progress', None
         else:
             status, eta = 'completed', None
+        driver = self._last_ride.get('driver', MOCK_DRIVERS[0]) if self._last_ride else MOCK_DRIVERS[0]
+        make, model, plate = driver['vehicle']
         return {
             'status': status,
-            'driver': {'name': 'Marcus T.', 'phone': '+1 (555) 234-5678', 'rating': 4.92},
-            'vehicle': {'make': 'Toyota', 'model': 'Camry', 'license_plate': 'TLC-4829'},
+            'driver': {'name': driver['name'], 'phone': None, 'rating': driver['rating']},
+            'vehicle': {'make': make, 'model': model, 'license_plate': plate},
             'eta_minutes': eta,
         }
 
