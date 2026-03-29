@@ -1,34 +1,31 @@
 # Learnings
 
-## What went well
+## Uber API is gated behind business partnerships
 
-- **MCP tool design clicked fast.** The "outcomes not operations" principle from the MCP guidelines is the right instinct. `uber_get_ride_options` internally calls two Uber endpoints but the agent sees one clean tool. Claude never needs to know about `/estimates/price` vs `/estimates/time`.
-- **Flat inputs remove a whole class of errors.** No nested dicts in tool parameters means no ambiguity in how Claude passes arguments. The schema is self-documenting.
-- **Structured errors are genuinely better than exceptions.** Claude reads `{"error": "NO_PREVIEW", "recoverable": true, "suggestion": "..."}` and gives the user a sensible next step. An uncaught exception would just confuse it.
-- **`--mock` made iteration fast.** Being able to run the full booking flow without any credentials meant all the agent/tool/state logic could be validated before touching the real API.
+I started assuming the Riders API would be available — built the initial mock provider around its expected responses based on docs available online. Later realized the API is gated: you need to contact Uber and get whitelisted. I tried creating apps under multiple API suites (Others, Uber Third Party Support, Rider3PLTesting) — none granted scope access.
 
-## What was harder than expected
+Learning: verify API access granularly before building around it. This was a small-scale project with a clear alternative, so pivoting wasn't painful. But in a production setting, discovering your core dependency is locked behind a business relationship after building around it could be scary.
 
-- **Circular imports.** `server.py` wants to register tools; tools need access to the provider; provider is configured in `server.py`. Solved with a tiny `src/provider.py` registry, but it took a moment to see clearly.
-- **Async input in the REPL.** Python's `input()` blocks the event loop. For this project it's fine (one turn at a time), but a production agent would need `asyncio.to_thread` or a proper async readline.
-- **MCP session lifecycle.** The `stdio_client` / `ClientSession` async context managers need the subprocess to stay alive for the whole conversation. Getting the nesting right (and graceful shutdown on `KeyboardInterrupt` inside an `ExceptionGroup`) required care.
+## Browser automation was the practical pivot
 
-## Auth design choices
+Pivoted to Playwright-based browser automation — same approach used by some examples I found online - Uber Eats MCP server and the Lyft MCP server in the wild. Getting it to work was its own journey:
 
-- Tokens stored in `token.json`, never in env vars — env vars appear in `ps` output and CI logs.
-- `_access_token` and `_refresh_token` are private attributes; they are never returned by any tool.
-- Expiry is tracked by `issued_at + expires_in` so the manager can pre-emptively refresh before a request fails rather than recovering after a 401.
-- OAuth flow is separate (`setup_auth.py`) from the server — the server never redirects or opens browsers. Clean separation of setup vs runtime.
+- Bundled Chromium gets bot-detected immediately by Uber
+- `m.uber.com` has aggressive anti-bot reload loops
+- Fresh Chrome profiles trigger CAPTCHA every time
+- Fix: `launch_persistent_context` with the real Chrome binary + `--disable-blink-features=AutomationControlled` + a dedicated profile directory at `~/.uber-mcp/chrome-profile`
+- One manual login, then hands-free forever — Chrome's own session management handles persistence
 
-## What I'd do differently at scale
+Scraping was fragile too. CSS class selectors broke across Uber's deploys. Switched to grabbing each card's full `inner_text()` and parsing with regex — way more stable. The pickup input requires clicking a container div (`data-uweb-guide-key`) because child elements intercept pointer events. Destination input needs `force=True`. These are the kinds of things you only learn by debugging live.
 
-- **Per-user state.** `StateManager` is a global singleton. A multi-tenant deployment needs state keyed by session/user ID.
-- **Persistent preview guard.** `last_preview` lives in memory and is lost on server restart. A real deployment would store it in Redis or a DB with a TTL.
-- **Token storage.** `token.json` is fine for a single-user CLI. At scale: encrypted secrets manager (AWS Secrets Manager, Vault) with automatic rotation.
-- **Geocoding cache.** The in-memory dict works for a session. A shared Redis cache with a 24h TTL would be appropriate for a service.
+## MCP's provider abstraction held up perfectly
 
-## MCP observations
+The agent code and all seven tool definitions never changed across three provider implementations: mock → Uber API client → browser automation. The only thing that swapped was the provider registered in `src/provider.py`. That's MCP working exactly as designed — tools define the interface, providers are swappable underneath.
 
-- **What works well:** The stdio transport is dead simple. Any subprocess that speaks JSON-RPC 2.0 is an MCP server. The Python SDK's `FastMCP` class removes almost all boilerplate.
-- **What's awkward:** There's no standard way for a tool to "stream" a response mid-call (e.g., showing live ETA updates). Each tool call is a single request/response. For ride tracking you'd need polling from the agent.
-- **Tool docstrings are load-bearing.** The LLM's decision about *when* to call a tool depends almost entirely on the docstring. A vague description leads to wrong tool selection. Writing tools is half code, half prompt engineering.
+## This approach has a shelf life
+
+Browser automation against uber.com works today, but it's subject to UI changes. If Uber updates their frontend — different selectors, different flow — the scraping breaks. An actual API integration would be more stable and maintainable. The architecture is ready for that swap if API access ever becomes available.
+
+## Overall
+
+Fun project. Went from "this should be straightforward with the Uber API" to "oh, the API is locked" to "let me automate a browser" to "the browser detects me as a bot" to "finally, real ride prices showing up in my terminal." The debugging journey was the real learning.
